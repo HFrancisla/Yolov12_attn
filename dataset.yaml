@@ -1,0 +1,13 @@
+path: datasets/bdd100k_high # 数据集根目录
+train: train/images # 训练集图片路径
+val: test/images # 验证集图片路径
+# test: images/test # 测试集图片路径 (可选)
+
+names:
+  0: car
+  1: traffic sign
+  2: traffic light
+  3: person
+  4: truck
+  5: bus
+  6: bike
