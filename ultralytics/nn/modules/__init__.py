@@ -58,7 +58,9 @@ from .block import (
     SCDown,
     TorchVision,
     A2C2f,
+    CustomA2C2f,
 )
+from .custom_attention import HTA, WTA, IRS, ICS, MDTA, CustomABlock
 from .conv import (
     CBAM,
     ChannelAttention,
@@ -161,5 +163,12 @@ __all__ = (
     "PSA",
     "TorchVision",
     "Index",
-    "A2C2f"
+    "A2C2f",
+    "CustomA2C2f",
+    "HTA",
+    "WTA",
+    "IRS",
+    "ICS",
+    "MDTA",
+    "CustomABlock",
 )

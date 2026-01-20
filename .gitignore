@@ -2,3 +2,39 @@
 yolo12_AreaAttn/
 .vscode/
 ultralytics.egg-info/
+
+# Python
+*.pyc
+*.pyo
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Training outputs
+runs/
+logs/
+*.pt
+*.pth
+*.onnx
+*.engine
+*.tflite
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kiro
+.kiro/

@@ -48,6 +48,7 @@ __all__ = (
     "C2fCIB",
     "Attention",
     "PSA",
+    "CustomA2C2f",
     "SCDown",
     "TorchVision",
 )
@@ -1362,6 +1363,63 @@ class A2C2f(nn.Module):
 
     def forward(self, x):
         """Forward pass through R-ELAN layer."""
+        y = [self.cv1(x)]
+        y.extend(m(y[-1]) for m in self.m)
+        if self.gamma is not None:
+            return x + self.gamma.view(1, -1, 1, 1) * self.cv2(torch.cat(y, 1))
+        return self.cv2(torch.cat(y, 1))
+
+
+class CustomA2C2f(nn.Module):
+    """
+    Custom A2C2f module with configurable attention mechanisms (HTA, WTA, IRS, ICS, MDTA).
+    
+    This module is similar to A2C2f but allows you to choose different attention mechanisms
+    instead of the default AreaAttention.
+    
+    Attributes:
+        c1 (int): Number of input channels
+        c2 (int): Number of output channels
+        n (int): Number of attention blocks to stack. Default: 1
+        attn_type (str): Type of attention mechanism. Options: 'HTA', 'WTA', 'IRS', 'ICS', 'MDTA'. Default: 'MDTA'
+        residual (bool): Whether to use residual connection with layer scale. Default: False
+        mlp_ratio (float): MLP expansion ratio. Default: 2.0
+        e (float): Channel expansion ratio. Default: 0.5
+        g (int): Number of groups for grouped convolution. Default: 1
+        shortcut (bool): Whether to use shortcut connection. Default: True
+        
+    Examples:
+        >>> import torch
+        >>> from ultralytics.nn.modules import CustomA2C2f
+        >>> model = CustomA2C2f(c1=64, c2=64, n=2, attn_type='HTA', residual=True)
+        >>> x = torch.randn(2, 64, 128, 128)
+        >>> output = model(x)
+        >>> print(output.shape)  # (2, 64, 128, 128)
+    """
+    
+    def __init__(self, c1, c2, n=1, attn_type="MDTA", residual=False, mlp_ratio=2.0, e=0.5, g=1, shortcut=True):
+        super().__init__()
+        from .custom_attention import CustomABlock
+        
+        c_ = int(c2 * e)  # hidden channels
+        assert c_ % 32 == 0, "Dimension of CustomABlock must be a multiple of 32."
+        
+        num_heads = c_ // 32
+        
+        self.cv1 = Conv(c1, c_, 1, 1)
+        self.cv2 = Conv((1 + n) * c_, c2, 1)
+        
+        init_values = 0.01
+        self.gamma = nn.Parameter(init_values * torch.ones((c2)), requires_grad=True) if residual else None
+        
+        # Use custom attention blocks
+        self.m = nn.ModuleList(
+            nn.Sequential(*(CustomABlock(c_, num_heads, mlp_ratio, attn_type) for _ in range(2)))
+            for _ in range(n)
+        )
+    
+    def forward(self, x):
+        """Forward pass through Custom R-ELAN layer."""
         y = [self.cv1(x)]
         y.extend(m(y[-1]) for m in self.m)
         if self.gamma is not None:
