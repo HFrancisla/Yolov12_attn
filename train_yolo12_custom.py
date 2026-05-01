@@ -5,6 +5,11 @@ YOLOv12 自定义注意力 - 简化训练脚本
 """
 from ultralytics import YOLO
 import argparse
+import sys
+
+# 强制刷新输出，避免日志混乱
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 
 
 # ============ 配置区域 ============
@@ -45,8 +50,9 @@ if __name__ == '__main__':
     BATCH_SIZE = args.batch if args.batch is not None else DEFAULT_BATCH_SIZE
     DEVICE = args.device if args.device is not None else DEFAULT_DEVICE
     IMAGE_SIZE = args.imgsz if args.imgsz is not None else DEFAULT_IMAGE_SIZE
-    print(f"开始训练 YOLOv12{MODEL_SIZE} with {ATTENTION_TYPE} Attention")
-    print(f"配置文件: {CONFIG_FILE}")
+    
+    print(f"开始训练 YOLOv12{MODEL_SIZE} with {ATTENTION_TYPE} Attention", flush=True)
+    print(f"配置文件: {CONFIG_FILE}", flush=True)
     
     # 读取并修改 YAML 配置
     import yaml
@@ -56,7 +62,7 @@ if __name__ == '__main__':
     # 更新 scale 参数
     if 'scales' in config:
         config['scale'] = MODEL_SIZE
-        print(f"使用模型大小: {MODEL_SIZE}")
+        print(f"使用模型大小: {MODEL_SIZE}", flush=True)
     
     # 动态替换 backbone 中的注意力类型
     for i, layer in enumerate(config['backbone']):
@@ -64,12 +70,12 @@ if __name__ == '__main__':
             # CustomA2C2f 的 YAML 参数格式: [c2, attn_type, residual, mlp_ratio]
             # (n 会被 parse_model 自动插入到索引2的位置)
             if len(layer[3]) >= 2:
-                print(f"Layer {i} before: {layer[3]}")
+                print(f"Layer {i} before: {layer[3]}", flush=True)
                 # 确保 attn_type 是字符串
                 layer[3][1] = str(ATTENTION_TYPE)  # 替换注意力类型 (索引1)
-                print(f"Layer {i} after: {layer[3]}")
+                print(f"Layer {i} after: {layer[3]}", flush=True)
     
-    print(f"使用注意力机制: {ATTENTION_TYPE}")
+    print(f"使用注意力机制: {ATTENTION_TYPE}", flush=True)
     
     # 保存修改后的配置到临时文件
     temp_config = f"yolov12{MODEL_SIZE}_{ATTENTION_TYPE.lower()}_temp.yaml"
@@ -86,7 +92,7 @@ if __name__ == '__main__':
         imgsz=IMAGE_SIZE,
         device=DEVICE,
         batch=BATCH_SIZE,
-        workers=4,  # 减少 worker 数量，降低 pin_memory 内存占用
+        workers=2,  # 减少 worker 数量，降低 pin_memory 内存占用
         # 优化器配置
         optimizer="AdamW",
         lr0=0.001,
@@ -99,7 +105,9 @@ if __name__ == '__main__':
         # 训练设置
         patience=50,
         project=f"runs/yolov12{MODEL_SIZE}_{ATTENTION_TYPE.lower()}",
-        name="train"
+        name="train_{IMAGE_SIZE}",
+        exist_ok=True,
+        amp=True
     )
     
-    print(f"\n训练完成！模型保存在: runs/yolov12{MODEL_SIZE}_{ATTENTION_TYPE.lower()}/train/weights/")
+    print(f"\n训练完成！模型保存在: runs/yolov12{MODEL_SIZE}_{ATTENTION_TYPE.lower()}/train/weights/", flush=True)
