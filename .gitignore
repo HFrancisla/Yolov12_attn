@@ -1,2 +1,5 @@
 *__pycache__/
 datasets/
+runs/
+ultralytics.egg-info/
+*.pt
