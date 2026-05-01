@@ -8,7 +8,9 @@ if __name__ == "__main__":
         data="datasets/VOC_handled/VOC.yaml",
         epochs=200,
         imgsz=640,
-        batch=32,
+        batch=16,
+        workers=8,
         device=0,
         name="yolov12m_voc_baseline",
+        project="runs/voc",
     )
