@@ -7,7 +7,10 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
+from einops import rearrange
+
 from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
+from .torch_wavelets import DWT_2D, IDWT_2D
 from .transformer import TransformerBlock
 
 __all__ = (
@@ -1160,6 +1163,109 @@ class TorchVision(nn.Module):
 import logging
 logger = logging.getLogger(__name__)
 
+
+class DWT_PureAttn(nn.Module):
+    """DWT-Frequency Self-Attention (DWT-FSA)
+
+    在 Haar 小波域的 4 个子带 (LL, LH, HL, HH) 上分别执行
+    MDTA 风格的转置通道注意力 (C×C attention)，然后 IDWT 重建回空间域。
+
+    Args:
+        dim:       输入通道数 C
+        num_heads: 多头注意力的头数 (必须能整除 dim)
+        bias:      卷积层是否使用 bias
+
+    输入:  (B, C, H, W)  — H, W 可以是任意尺寸 (奇数会自动 pad)
+    输出:  (B, C, H, W)
+    """
+    def __init__(self, dim, num_heads, bias=False):
+        super(DWT_PureAttn, self).__init__()
+        self.num_heads = num_heads
+        self.temperature = nn.Parameter(torch.ones(num_heads, 1, 1))
+
+        self.q_conv = nn.Conv2d(dim, dim, kernel_size=1, bias=bias)
+        self.q_dwconv = nn.Conv2d(
+            dim, dim, kernel_size=3, stride=1, padding=1, groups=dim, bias=bias
+        )
+
+        self.k_conv = nn.Conv2d(dim, dim, kernel_size=1, bias=bias)
+        self.k_dwconv = nn.Conv2d(
+            dim, dim, kernel_size=3, stride=1, padding=1, groups=dim, bias=bias
+        )
+
+        self.v_conv = nn.Conv2d(dim, dim, kernel_size=1, bias=bias)
+        self.v_dwconv = nn.Conv2d(
+            dim, dim, kernel_size=3, stride=1, padding=1, groups=dim, bias=bias
+        )
+
+        self.dwt = DWT_2D(wave="haar")
+        self.idwt = IDWT_2D(wave="haar")
+
+        self.project_out = nn.Conv2d(dim, dim, kernel_size=1, bias=bias)
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+
+        q = self.q_dwconv(self.q_conv(x))
+        k = self.k_dwconv(self.k_conv(x))
+        v = self.v_dwconv(self.v_conv(x))
+
+        pad_h = h % 2
+        pad_w = w % 2
+        if pad_h or pad_w:
+            q = F.pad(q, (0, pad_w, 0, pad_h), mode="reflect")
+            k = F.pad(k, (0, pad_w, 0, pad_h), mode="reflect")
+            v = F.pad(v, (0, pad_w, 0, pad_h), mode="reflect")
+
+        q_dwt = self.dwt(q)
+        k_dwt = self.dwt(k)
+        v_dwt = self.dwt(v)
+
+        q_subs = q_dwt.chunk(4, dim=1)
+        k_subs = k_dwt.chunk(4, dim=1)
+        v_subs = v_dwt.chunk(4, dim=1)
+
+        h2, w2 = (h + pad_h) // 2, (w + pad_w) // 2
+        attended_subs = []
+
+        for q_s, k_s, v_s in zip(q_subs, k_subs, v_subs):
+            q_s = rearrange(
+                q_s, "b (head c) h w -> b head c (h w)", head=self.num_heads
+            )
+            k_s = rearrange(
+                k_s, "b (head c) h w -> b head c (h w)", head=self.num_heads
+            )
+            v_s = rearrange(
+                v_s, "b (head c) h w -> b head c (h w)", head=self.num_heads
+            )
+
+            q_s = torch.nn.functional.normalize(q_s, dim=-1)
+            k_s = torch.nn.functional.normalize(k_s, dim=-1)
+
+            attn = (q_s @ k_s.transpose(-2, -1)) * self.temperature
+            attn = attn.softmax(dim=-1)
+
+            out_s = attn @ v_s
+
+            out_s = rearrange(
+                out_s,
+                "b head c (h w) -> b (head c) h w",
+                head=self.num_heads,
+                h=h2,
+                w=w2,
+            )
+            attended_subs.append(out_s)
+
+        out_dwt = torch.cat(attended_subs, dim=1)
+        out = self.idwt(out_dwt)
+
+        if pad_h or pad_w:
+            out = out[:, :, :h, :w]
+
+        out = self.project_out(out)
+        return out
+
+
 USE_FLASH_ATTN = False
 try:
     import torch
@@ -1292,7 +1398,7 @@ class ABlock(nn.Module):
         """Initializes the ABlock with area-attention and feed-forward layers for faster feature extraction."""
         super().__init__()
 
-        self.attn = AAttn(dim, num_heads=num_heads, area=area)
+        self.attn = DWT_PureAttn(dim, num_heads=num_heads, bias=False)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = nn.Sequential(Conv(dim, mlp_hidden_dim, 1), Conv(mlp_hidden_dim, dim, 1, act=False))
 
