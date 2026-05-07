@@ -1440,6 +1440,20 @@ class DWT_Downsample(nn.Module):
         self.channel_adjust = nn.Conv2d(c1, c2, 1, bias=False)
         self._detail = None
 
+    def __deepcopy__(self, memo):
+        """Custom deepcopy that skips _detail (non-leaf tensor) to support ModelEMA."""
+        import copy
+
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            if k == "_detail":
+                result.__dict__[k] = None
+            else:
+                result.__dict__[k] = copy.deepcopy(v, memo)
+        return result
+
     def forward(self, x):
         """Forward pass: DWT decompose, store detail, return channel-adjusted LL."""
         dwt_out = self.dwt(x)  # (B, 4*c1, H/2, W/2)
