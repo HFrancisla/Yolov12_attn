@@ -65,6 +65,8 @@ from ultralytics.nn.modules import (
     WorldDetect,
     v10Detect,
     A2C2f,
+    DWT_Downsample,
+    IDWT_Upsample,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -147,7 +149,11 @@ class BaseModel(nn.Module):
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
             if profile:
                 self._profile_one_layer(m, x, dt)
-            x = m(x)  # run
+            if isinstance(m, IDWT_Upsample):
+                detail = self.model[m.detail_from]._detail
+                x = m(x, detail)
+            else:
+                x = m(x)  # run
             y.append(x if m.i in self.save else None)  # save output
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
@@ -955,6 +961,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         LOGGER.info(f"\n{'':>3}{'from':>20}{'n':>3}{'params':>10}  {'module':<45}{'arguments':<30}")
     ch = [ch]
     layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
+    dwt_c_enc = {}  # maps layer index -> input channels (c_enc) for DWT_Downsample layers
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
         m = getattr(torch.nn, m[3:]) if "nn." in m else globals()[m]  # get module
         for j, a in enumerate(args):
@@ -997,6 +1004,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             SCDown,
             C2fCIB,
             A2C2f,
+            DWT_Downsample,
         }:
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
@@ -1036,6 +1044,15 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 if scale in "lx":  # for L/X sizes
                     args.append(True)
                     args.append(1.5)
+            if m is DWT_Downsample:
+                dwt_c_enc[i] = c1  # record input channels for paired IDWT_Upsample
+        elif m is IDWT_Upsample:
+            detail_from = int(args[0])
+            c1 = ch[f]
+            c_enc = dwt_c_enc[detail_from]
+            c2 = c1  # output = input channels (preserves channels like nn.Upsample)
+            args = [c1, c_enc, detail_from]
+            save.append(detail_from)  # ensure DWT layer is tracked as dependency
         elif m is AIFI:
             args = [ch[f], *args]
         elif m in {HGStem, HGBlock}:

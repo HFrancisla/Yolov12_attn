@@ -50,6 +50,10 @@ __all__ = (
     "PSA",
     "SCDown",
     "TorchVision",
+    "DWT_2D",
+    "IDWT_2D",
+    "DWT_Downsample",
+    "IDWT_Upsample",
 )
 
 
@@ -1367,3 +1371,105 @@ class A2C2f(nn.Module):
         if self.gamma is not None:
             return x + self.gamma.view(1, -1, 1, 1) * self.cv2(torch.cat(y, 1))
         return self.cv2(torch.cat(y, 1))
+
+
+class DWT_2D(nn.Module):
+    """Haar 2-D DWT via pixel_unshuffle.
+
+    Input:  (B, C, H, W)       H, W must be even
+    Output: (B, 4C, H/2, W/2)  channel order [LL, LH, HL, HH] per input channel
+    """
+
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        """Apply Haar DWT to input tensor."""
+        xu = F.pixel_unshuffle(x, 2)  # (B, 4C, H/2, W/2)
+        B, C4, H2, W2 = xu.shape
+        C = C4 // 4
+        xu = xu.view(B, C, 4, H2, W2)
+        x_ee, x_eo, x_oe, x_oo = xu[:, :, 0], xu[:, :, 1], xu[:, :, 2], xu[:, :, 3]
+        ll = (x_ee + x_eo + x_oe + x_oo) * 0.5
+        lh = (x_ee - x_eo + x_oe - x_oo) * 0.5
+        hl = (x_ee + x_eo - x_oe - x_oo) * 0.5
+        hh = (x_ee - x_eo - x_oe + x_oo) * 0.5
+        return torch.cat([ll, lh, hl, hh], dim=1)
+
+
+class IDWT_2D(nn.Module):
+    """Haar 2-D IDWT via pixel_shuffle.
+
+    Input:  (B, 4C, H/2, W/2)  channel order [LL, LH, HL, HH]
+    Output: (B, C, H, W)
+    """
+
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        """Apply Haar IDWT to input tensor."""
+        B, C4, H2, W2 = x.shape
+        C = C4 // 4
+        x = x.view(B, 4, C, H2, W2)
+        ll, lh, hl, hh = x[:, 0], x[:, 1], x[:, 2], x[:, 3]
+        x_ee = (ll + lh + hl + hh) * 0.5
+        x_eo = (ll - lh + hl - hh) * 0.5
+        x_oe = (ll + lh - hl - hh) * 0.5
+        x_oo = (ll - lh - hl + hh) * 0.5
+        x = torch.stack([x_ee, x_eo, x_oe, x_oo], dim=2)  # (B, C, 4, H2, W2)
+        x = x.view(B, C * 4, H2, W2)
+        return F.pixel_shuffle(x, 2)  # (B, C, H, W)
+
+
+class DWT_Downsample(nn.Module):
+    """DWT-based downsample replacing Conv stride 2.
+
+    Uses Haar DWT to decompose features into low-frequency (LL) and high-frequency
+    (LH/HL/HH) components. LL is channel-adjusted as main output; high-frequency
+    detail is stored internally for the corresponding IDWT_Upsample layer.
+
+    Input:  (B, c1, H, W)
+    Output: (B, c2, H/2, W/2)
+    Stored: _detail = (B, 3*c1, H/2, W/2)
+    """
+
+    def __init__(self, c1, c2):
+        super().__init__()
+        self.dwt = DWT_2D()
+        self.channel_adjust = nn.Conv2d(c1, c2, 1, bias=False)
+        self._detail = None
+
+    def forward(self, x):
+        """Forward pass: DWT decompose, store detail, return channel-adjusted LL."""
+        dwt_out = self.dwt(x)  # (B, 4*c1, H/2, W/2)
+        c = x.shape[1]
+        x_ll = dwt_out[:, :c]  # (B, c1, H/2, W/2)
+        self._detail = dwt_out[:, c:]  # (B, 3*c1, H/2, W/2)
+        return self.channel_adjust(x_ll)  # (B, c2, H/2, W/2)
+
+
+class IDWT_Upsample(nn.Module):
+    """IDWT-based upsample replacing nn.Upsample.
+
+    Combines decoder features (as LL) with high-frequency detail from the
+    corresponding DWT_Downsample layer to reconstruct spatial resolution
+    via inverse Haar wavelet transform.
+
+    Input:  x = (B, c1, H/2, W/2), detail = (B, 3*c_enc, H/2, W/2)
+    Output: (B, c1, H, W)
+    """
+
+    def __init__(self, c1, c_enc, detail_from=-1):
+        super().__init__()
+        self.idwt = IDWT_2D()
+        self.detail_from = detail_from
+        self.channel_reduce = nn.Conv2d(c1, c_enc, 1, bias=False) if c1 != c_enc else nn.Identity()
+        self.channel_expand = nn.Conv2d(c_enc, c1, 1, bias=False) if c_enc != c1 else nn.Identity()
+
+    def forward(self, x, detail):
+        """Forward pass: reduce channels, IDWT with detail, expand channels."""
+        x_ll = self.channel_reduce(x)  # (B, c_enc, H/2, W/2)
+        idwt_in = torch.cat([x_ll, detail], 1)  # (B, 4*c_enc, H/2, W/2)
+        out = self.idwt(idwt_in)  # (B, c_enc, H, W)
+        return self.channel_expand(out)  # (B, c1, H, W)
