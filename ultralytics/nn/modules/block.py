@@ -1425,64 +1425,38 @@ class IDWT_2D(nn.Module):
 class DWT_Downsample(nn.Module):
     """DWT-based downsample replacing Conv stride 2.
 
-    Uses Haar DWT to decompose features into 4 sub-bands [LL, LH, HL, HH] (4C).
-    All 4C channels are fused via 1x1 Conv to produce the main output (c2);
-    high-frequency detail [LH, HL, HH] (3C) is stored for the paired IDWT_Upsample.
+    Uses Haar DWT to decompose features into 4 sub-bands [LL, LH, HL, HH] (4C),
+    then fuses via 1x1 Conv to produce the output (c2).
 
     Input:  (B, c1, H, W)
     Output: (B, c2, H/2, W/2)
-    Stored: _detail = (B, 3*c1, H/2, W/2)
     """
 
     def __init__(self, c1, c2):
         super().__init__()
         self.dwt = DWT_2D()
         self.channel_fuse = nn.Conv2d(c1 * 4, c2, 1, bias=False)
-        self._detail = None
-
-    def __deepcopy__(self, memo):
-        """Custom deepcopy that skips _detail (non-leaf tensor) to support ModelEMA."""
-        import copy
-
-        cls = self.__class__
-        result = cls.__new__(cls)
-        memo[id(self)] = result
-        for k, v in self.__dict__.items():
-            if k == "_detail":
-                result.__dict__[k] = None
-            else:
-                result.__dict__[k] = copy.deepcopy(v, memo)
-        return result
 
     def forward(self, x):
-        """Forward pass: DWT decompose, store detail, return fused output."""
-        dwt_out = self.dwt(x)  # (B, 4*c1, H/2, W/2)
-        c = x.shape[1]
-        self._detail = dwt_out[:, c:]  # (B, 3*c1, H/2, W/2) = [LH, HL, HH]
-        return self.channel_fuse(dwt_out)  # (B, c2, H/2, W/2) — fuses all 4 sub-bands
+        """Forward pass: DWT decompose, fuse channels."""
+        return self.channel_fuse(self.dwt(x))  # (B, c2, H/2, W/2)
 
 
 class IDWT_Upsample(nn.Module):
     """IDWT-based upsample replacing nn.Upsample.
 
-    Combines decoder features (as LL) with high-frequency detail from the
-    corresponding DWT_Downsample layer to reconstruct spatial resolution
-    via inverse Haar wavelet transform.
+    Expands channels via 1x1 Conv then applies inverse Haar wavelet transform
+    to double spatial resolution while preserving channel count.
 
-    Input:  x = (B, c1, H/2, W/2), detail = (B, 3*c_enc, H/2, W/2)
+    Input:  (B, c1, H/2, W/2)
     Output: (B, c1, H, W)
     """
 
-    def __init__(self, c1, c_enc, detail_from=-1):
+    def __init__(self, c1):
         super().__init__()
+        self.proj = nn.Conv2d(c1, c1 * 4, 1, bias=False)
         self.idwt = IDWT_2D()
-        self.detail_from = detail_from
-        self.channel_reduce = nn.Conv2d(c1, c_enc, 1, bias=False) if c1 != c_enc else nn.Identity()
-        self.channel_expand = nn.Conv2d(c_enc, c1, 1, bias=False) if c_enc != c1 else nn.Identity()
 
-    def forward(self, x, detail):
-        """Forward pass: reduce channels, IDWT with detail, expand channels."""
-        x_ll = self.channel_reduce(x)  # (B, c_enc, H/2, W/2)
-        idwt_in = torch.cat([x_ll, detail], 1)  # (B, 4*c_enc, H/2, W/2)
-        out = self.idwt(idwt_in)  # (B, c_enc, H, W)
-        return self.channel_expand(out)  # (B, c1, H, W)
+    def forward(self, x):
+        """Forward pass: expand channels, IDWT to upsample."""
+        return self.idwt(self.proj(x))  # (B, c1, H, W)
