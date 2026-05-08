@@ -1425,9 +1425,9 @@ class IDWT_2D(nn.Module):
 class DWT_Downsample(nn.Module):
     """DWT-based downsample replacing Conv stride 2.
 
-    Uses Haar DWT to decompose features into low-frequency (LL) and high-frequency
-    (LH/HL/HH) components. LL is channel-adjusted as main output; high-frequency
-    detail is stored internally for the corresponding IDWT_Upsample layer.
+    Uses Haar DWT to decompose features into 4 sub-bands [LL, LH, HL, HH] (4C).
+    All 4C channels are fused via 1x1 Conv to produce the main output (c2);
+    high-frequency detail [LH, HL, HH] (3C) is stored for the paired IDWT_Upsample.
 
     Input:  (B, c1, H, W)
     Output: (B, c2, H/2, W/2)
@@ -1437,7 +1437,7 @@ class DWT_Downsample(nn.Module):
     def __init__(self, c1, c2):
         super().__init__()
         self.dwt = DWT_2D()
-        self.channel_adjust = nn.Conv2d(c1, c2, 1, bias=False)
+        self.channel_fuse = nn.Conv2d(c1 * 4, c2, 1, bias=False)
         self._detail = None
 
     def __deepcopy__(self, memo):
@@ -1455,12 +1455,11 @@ class DWT_Downsample(nn.Module):
         return result
 
     def forward(self, x):
-        """Forward pass: DWT decompose, store detail, return channel-adjusted LL."""
+        """Forward pass: DWT decompose, store detail, return fused output."""
         dwt_out = self.dwt(x)  # (B, 4*c1, H/2, W/2)
         c = x.shape[1]
-        x_ll = dwt_out[:, :c]  # (B, c1, H/2, W/2)
-        self._detail = dwt_out[:, c:]  # (B, 3*c1, H/2, W/2)
-        return self.channel_adjust(x_ll)  # (B, c2, H/2, W/2)
+        self._detail = dwt_out[:, c:]  # (B, 3*c1, H/2, W/2) = [LH, HL, HH]
+        return self.channel_fuse(dwt_out)  # (B, c2, H/2, W/2) — fuses all 4 sub-bands
 
 
 class IDWT_Upsample(nn.Module):
