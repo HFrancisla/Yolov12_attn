@@ -12,5 +12,5 @@ if __name__ == "__main__":
         workers=8,
         device=0,
         name="yolov12m_voc_Downsample_DWT_LL_C_to_2C_with",
-        project="runs/voc",
+        project="runs/VOC",
     )
