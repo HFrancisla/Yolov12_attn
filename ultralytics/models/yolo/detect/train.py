@@ -52,7 +52,7 @@ class DetectionTrainer(BaseTrainer):
             LOGGER.warning("WARNING ⚠️ 'rect=True' is incompatible with DataLoader shuffle, setting shuffle=False")
             shuffle = False
         workers = self.args.workers if mode == "train" else self.args.workers * 2
-        pin_memory = mode == "train"
+        pin_memory = False
         return build_dataloader(dataset, batch_size, workers, shuffle, rank, pin_memory=pin_memory)  # return dataloader
 
     def preprocess_batch(self, batch):
