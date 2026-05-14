@@ -1422,6 +1422,30 @@ class IDWT_2D(nn.Module):
         return F.pixel_shuffle(x, 2)  # (B, C, H, W)
 
 
+class DWT_DownsampleAll(nn.Module):
+    """DWT-based downsample using all four subbands (LL+LH+HL+HH).
+
+    Applies Haar DWT to produce 4C channels, then projects to c2 via
+    1×1 Conv + BatchNorm + SiLU.  No detail storage or skip connection.
+
+    Input:  (B, c1, H, W)
+    Output: (B, c2, H/2, W/2)
+    """
+
+    def __init__(self, c1, c2):
+        super().__init__()
+        self.dwt = DWT_2D()
+        self.proj = nn.Sequential(
+            nn.Conv2d(c1 * 4, c2, 1, bias=False),
+            nn.BatchNorm2d(c2),
+            nn.SiLU(inplace=True),
+        )
+
+    def forward(self, x):
+        """Forward pass: DWT all subbands then project."""
+        return self.proj(self.dwt(x))  # (B, c1, H, W) → (B, 4*c1, H/2, W/2) → (B, c2, H/2, W/2)
+
+
 class DWT_Downsample(nn.Module):
     """DWT-based downsample replacing Conv stride 2.
 

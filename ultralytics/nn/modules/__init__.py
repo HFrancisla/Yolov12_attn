@@ -59,6 +59,7 @@ from .block import (
     TorchVision,
     A2C2f,
     DWT_Downsample,
+    DWT_DownsampleAll,
     IDWT_Upsample,
 )
 from .conv import (
@@ -165,5 +166,6 @@ __all__ = (
     "Index",
     "A2C2f",
     "DWT_Downsample",
+    "DWT_DownsampleAll",
     "IDWT_Upsample",
 )

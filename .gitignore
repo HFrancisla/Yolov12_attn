@@ -4,3 +4,4 @@ runs/
 ultralytics.egg-info/
 *.pt
 *.log
+docs/

@@ -11,6 +11,6 @@ if __name__ == "__main__":
         batch=32,
         workers=8,
         device=0,
-        name="yolov12m_voc_Downsample_DWT_LL_C_to_2C_with",
+        name="yolov12m_voc_Downsample_DWT_all_4C_BNSiLU+LL_with",
         project="runs/VOC",
     )
