@@ -11,6 +11,6 @@ if __name__ == "__main__":
         batch=64,
         workers=8,
         device=0,
-        name="yolov12n_voc_baseline",
+        name="yolov12n_Attn_Intra_channel     ",
         project="runs/VOC",
     )

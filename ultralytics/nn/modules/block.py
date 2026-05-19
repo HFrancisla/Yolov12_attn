@@ -1259,7 +1259,87 @@ class AAttn(nn.Module):
         x = x.reshape(B, H, W, C).permute(0, 3, 1, 2)
 
         return self.proj(x + pp)
-    
+
+
+class IntraChannelAttention(nn.Module):
+    """
+    Intra-channel attention module with 2D patch-based spatial decomposition.
+
+    For each channel independently, the spatial feature map is divided into an NxN grid of patches,
+    and attention is computed between patches within the same channel.
+
+    Attributes:
+        dim (int): Number of input/output channels.
+        N (int): Grid size for spatial decomposition. Input H and W must be divisible by N.
+
+    Notes:
+        Uses N=4 by default, compatible with P3 (80x80), P4 (40x40), and P5 (20x20) feature maps
+        at 640x640 input resolution.
+    """
+
+    def __init__(self, dim, num_heads=8, area=1, N=4):
+        """Initializes intra-channel attention with patch-based spatial decomposition."""
+        super().__init__()
+        self.N = N
+        self.temperature = nn.Parameter(torch.ones(1, 1, 1, 1))
+
+        # QKV generation: 1x1 conv + 3x3 depthwise conv for local context
+        self.qkv = Conv(dim, dim * 3, 1, act=False)
+        self.qkv_dwconv = nn.Conv2d(
+            dim * 3, dim * 3, kernel_size=3, stride=1, padding=1, groups=dim * 3, bias=False
+        )
+        # Output projection
+        self.project_out = Conv(dim, dim, 1, act=False)
+        # Positional encoding via depthwise conv
+        self.pe = Conv(dim, dim, 3, 1, g=dim, act=False)
+
+    def forward(self, x):
+        """Forward pass: patch decomposition -> intra-channel attention -> reconstruct."""
+        b, c, h, w = x.shape
+        N = self.N
+
+        # Pad spatial dims to be divisible by N (needed for rectangular validation)
+        pad_h = (N - h % N) % N
+        pad_w = (N - w % N) % N
+        if pad_h > 0 or pad_w > 0:
+            x = F.pad(x, (0, pad_w, 0, pad_h))
+
+        _, _, hp, wp = x.shape
+        h_p, w_p = hp // N, wp // N
+        n2 = N * N
+        s = h_p * w_p
+
+        # Generate Q, K, V with local context
+        qkv = self.qkv_dwconv(self.qkv(x))
+        q, k, v = qkv.chunk(3, dim=1)
+
+        # Positional encoding from v before reshaping
+        pe = self.pe(v)
+
+        # Rearrange to patches: [b, c, hp, wp] -> [b, c, N*N, h_p*w_p]
+        q = q.reshape(b, c, N, h_p, N, w_p).permute(0, 1, 2, 4, 3, 5).reshape(b, c, n2, s)
+        k = k.reshape(b, c, N, h_p, N, w_p).permute(0, 1, 2, 4, 3, 5).reshape(b, c, n2, s)
+        v = v.reshape(b, c, N, h_p, N, w_p).permute(0, 1, 2, 4, 3, 5).reshape(b, c, n2, s)
+
+        # Intra-channel attention: [b, c, n2, s] @ [b, c, s, n2] -> [b, c, n2, n2]
+        scale = s ** -0.5
+        attn = (q @ k.transpose(-2, -1)) * scale * self.temperature
+        attn = attn.softmax(dim=-1)
+
+        # [b, c, n2, n2] @ [b, c, n2, s] -> [b, c, n2, s]
+        out = attn @ v
+
+        # Reverse rearrange: [b, c, n2, s] -> [b, c, hp, wp]
+        out = out.reshape(b, c, N, N, h_p, w_p).permute(0, 1, 2, 4, 3, 5).reshape(b, c, hp, wp)
+
+        # Output projection with positional encoding
+        out = self.project_out(out + pe)
+
+        # Remove padding
+        if pad_h > 0 or pad_w > 0:
+            out = out[:, :, :h, :w]
+        return out
+
 
 class ABlock(nn.Module):
     """
@@ -1292,7 +1372,7 @@ class ABlock(nn.Module):
         """Initializes the ABlock with area-attention and feed-forward layers for faster feature extraction."""
         super().__init__()
 
-        self.attn = AAttn(dim, num_heads=num_heads, area=area)
+        self.attn = IntraChannelAttention(dim, num_heads=num_heads, area=area)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = nn.Sequential(Conv(dim, mlp_hidden_dim, 1), Conv(mlp_hidden_dim, dim, 1, act=False))
 
